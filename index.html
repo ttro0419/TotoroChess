@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Chess.com PGN Viewer</title>
+<style>
+:root{--y:#FFD54A;--ink:#333;--bg:#fffaf0;--card:#fff;--line:#e5dcc3;--muted:#777;}
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+header{position:sticky;top:0;z-index:3;background:rgba(255,250,240,.96);border-bottom:1px solid var(--line);padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+h1{font-size:17px;margin:0 10px 0 0} input{height:38px;border:1px solid var(--line);border-radius:12px;padding:0 12px;font-size:15px;background:#fff;min-width:210px}
+button{height:38px;border:0;border-radius:12px;padding:0 13px;background:var(--y);color:#3c3520;font-weight:700;cursor:pointer}button.secondary{background:#fff;border:1px solid var(--line)}button:disabled{opacity:.55;cursor:not-allowed}
+main{display:grid;grid-template-columns:390px 1fr;gap:12px;padding:12px}.panel{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px;box-shadow:0 6px 18px rgba(90,70,20,.06)}
+.status{font-size:13px;color:var(--muted);margin-left:auto}.game{border:1px solid var(--line);border-radius:14px;padding:10px;margin:8px 0;background:#fff;cursor:pointer}.game:hover{outline:2px solid var(--y)}.game .top{font-weight:800}.game .meta{font-size:13px;color:var(--muted);margin-top:4px}.more{width:100%;margin-top:8px}
+.viewer{display:grid;grid-template-columns:minmax(280px,520px) 1fr;gap:12px}.board{width:min(82vw,520px);aspect-ratio:1;border:3px solid #b99b31;border-radius:14px;overflow:hidden;display:grid;grid-template-columns:repeat(8,1fr);background:#ddd}.sq{display:flex;align-items:center;justify-content:center;font-size:clamp(24px,6vw,52px);line-height:1}.light{background:#f5e7bb}.dark{background:#d4a642}.last{box-shadow:inset 0 0 0 4px rgba(255,255,255,.55)}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.moves{max-height:440px;overflow:auto;border:1px solid var(--line);border-radius:14px;padding:8px;background:#fff}.mv{display:inline-block;padding:5px 7px;margin:2px;border-radius:9px;cursor:pointer}.mv:hover,.mv.active{background:var(--y)}textarea{width:100%;min-height:170px;border:1px solid var(--line);border-radius:14px;padding:10px;font-family:ui-monospace,Consolas,monospace}.log{white-space:pre-wrap;background:#2b2b2b;color:#eee;border-radius:14px;padding:10px;max-height:160px;overflow:auto;font-size:12px}
+@media(max-width:880px){main,.viewer{grid-template-columns:1fr}.status{width:100%;margin-left:0}.board{width:100%}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Chess.com棋譜ビューア</h1>
+  <input id="user" placeholder="Chess.com username" autocomplete="off" />
+  <button id="search">検索</button>
+  <button id="clear" class="secondary">ログ消去</button>
+  <div id="status" class="status">1HTML / サーバー不要</div>
+</header>
+<main>
+  <section class="panel">
+    <b>棋譜一覧</b>
+    <div id="list"></div>
+    <button id="more" class="more secondary" style="display:none">さらに読み込み</button>
+    <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+    <b>PGN貼り付け</b>
+    <textarea id="pgnBox" placeholder="PGNを貼り付けても表示できます"></textarea>
+    <button id="loadPgn" style="margin-top:8px">PGNを開く</button>
+  </section>
+  <section class="panel viewer">
+    <div>
+      <div id="board" class="board"></div>
+      <div class="controls">
+        <button id="prev" class="secondary">←</button><button id="next">→</button><button id="flip" class="secondary">反転</button><button id="copy" class="secondary">PGNコピー</button>
+      </div>
+      <p id="gameTitle" class="status" style="margin-left:0"></p>
+    </div>
+    <div>
+      <b>手順</b>
+      <div id="moves" class="moves"></div>
+      <p class="status" style="margin-left:0">※Chess.com公開APIにブラウザから直接アクセスします。失敗時はログを確認してください。</p>
+      <div id="log" class="log"></div>
+    </div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+const $=id=>document.getElementById(id); const logBox=$('log');
+let games=[], shown=0, archives=[], archiveIndex=0, currentPgn='', fens=[], moves=[], ply=0, flipped=false;
+const P={p:'♟',r:'♜',n:'♞',b:'♝',q:'♛',k:'♚',P:'♙',R:'♖',N:'♘',B:'♗',Q:'♕',K:'♔'};
+function log(t,o){const ts=new Date().toLocaleTimeString();logBox.textContent+=`[${ts}] ${t}`+(o?'\n'+JSON.stringify(o,null,2):'')+'\n';logBox.scrollTop=logBox.scrollHeight}
+function setStatus(t){$('status').textContent=t}
+async function getJson(url){log('GET '+url); const r=await fetch(url,{headers:{'Accept':'application/json'}}); const text=await r.text(); log('HTTP '+r.status+' '+url, text.slice(0,400)); if(!r.ok)throw new Error('HTTP '+r.status); return JSON.parse(text)}
+async function search(){const u=$('user').value.trim(); if(!u)return; $('list').innerHTML=''; games=[]; shown=0; archiveIndex=0; archives=[]; $('more').style.display='none'; setStatus('取得中...');
+ try{const a=await getJson(`https://api.chess.com/pub/player/${encodeURIComponent(u)}/games/archives`); archives=(a.archives||[]).reverse(); await loadMore(); setStatus(`${games.length}件取得`)}catch(e){setStatus('取得失敗'); log('ERROR '+e.message,{hint:'ユーザー名誤り、非公開/存在なし、CORS/通信制限の可能性'});}}
+async function loadMore(){const need=shown+10; while(games.length<need && archiveIndex<archives.length){const data=await getJson(archives[archiveIndex++]); const arr=(data.games||[]).sort((a,b)=>(b.end_time||0)-(a.end_time||0)); games.push(...arr)} renderList();}
+function renderList(){const box=$('list'); box.innerHTML=''; games.slice(0,shown+10).forEach((g,i)=>{const white=g.white?.username||'White', black=g.black?.username||'Black'; const d=g.end_time?new Date(g.end_time*1000).toLocaleDateString():''; const div=document.createElement('div'); div.className='game'; div.innerHTML=`<div class="top">${white} vs ${black}</div><div class="meta">${d} / ${g.time_class||''} / ${g.rules||''}</div><div class="meta">${g.white?.result||''} - ${g.black?.result||''}</div>`; div.onclick=()=>openPgn(g.pgn,`${white} vs ${black}`); box.appendChild(div)}); shown=Math.min(shown+10,games.length); $('more').style.display=(archiveIndex<archives.length||shown<games.length)?'block':'none'}
+function openPgn(pgn,title='PGN'){currentPgn=pgn||''; $('pgnBox').value=currentPgn; $('gameTitle').textContent=title; if(typeof Chess==='undefined'){log('ERROR chess.jsが読み込めません');return} const c=new Chess(); const ok=c.load_pgn(currentPgn,{sloppy:true}); if(!ok){log('ERROR PGNを読み込めません');return} moves=c.history(); const r=new Chess(); fens=[r.fen()]; for(const m of moves){r.move(m,{sloppy:true}); fens.push(r.fen())} ply=0; renderBoard(); renderMoves();}
+function renderBoard(){const b=$('board'); b.innerHTML=''; const fen=(fens[ply]||new Chess().fen()).split(' ')[0]; const rows=fen.split('/'); let map=[]; rows.forEach(row=>{let arr=[]; for(const ch of row){if(/\d/.test(ch)){for(let i=0;i<+ch;i++)arr.push('')}else arr.push(ch)} map.push(arr)}); const ranks=flipped?[0,1,2,3,4,5,6,7]:[7,6,5,4,3,2,1,0]; const files=flipped?[7,6,5,4,3,2,1,0]:[0,1,2,3,4,5,6,7]; ranks.forEach(r=>files.forEach(f=>{const s=document.createElement('div'); s.className='sq '+(((r+f)%2)?'dark':'light'); s.textContent=P[map[7-r][f]]||''; b.appendChild(s)}));}
+function renderMoves(){const m=$('moves');m.innerHTML=''; moves.forEach((x,i)=>{if(i%2===0)m.append(document.createTextNode((i/2+1)+'. ')); const sp=document.createElement('span'); sp.className='mv '+(ply===i+1?'active':''); sp.textContent=x; sp.onclick=()=>{ply=i+1;renderBoard();renderMoves()}; m.appendChild(sp)});}
+$('search').onclick=search; $('more').onclick=loadMore; $('clear').onclick=()=>logBox.textContent=''; $('loadPgn').onclick=()=>openPgn($('pgnBox').value,'貼り付けPGN'); $('prev').onclick=()=>{ply=Math.max(0,ply-1);renderBoard();renderMoves()}; $('next').onclick=()=>{ply=Math.min(fens.length-1,ply+1);renderBoard();renderMoves()}; $('flip').onclick=()=>{flipped=!flipped;renderBoard()}; $('copy').onclick=()=>navigator.clipboard?.writeText(currentPgn);
+renderBoard(); log('起動',{origin:location.origin,protocol:location.protocol});
+</script>
+</body>
+</html>
